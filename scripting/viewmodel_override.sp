@@ -10,6 +10,13 @@
  * sappers.
  * - "clientmodel override" can be used in place of both if they share the same model, and will
  * take priority.
+ *
+ * Okay, so this is a rather awful mix of the main and lighting fix branch code. I got the worldmodel to not show,
+ * and the weapon to not be attached when dead. Still trying to figure out how to properly -
+ * convert over the sniper fix, since i have a surface level understanding of sourcepawn.
+ * a lot of these changes are guesses based on what i'd do in lua, considering my -
+ * "expertise" is in making garrys mod addons. what im doing here is the equivalent of throwing a rock and seeing -
+ * where it lands.
  */
 #pragma semicolon 1
 #include <sourcemod>
@@ -38,8 +45,11 @@
 
 bool g_bIgnoreWeaponSwitch[MAXPLAYERS + 1];
 
+
 int g_iLastViewmodelRef[MAXPLAYERS + 1] = { INVALID_ENT_REFERENCE, ... };
+
 int g_iLastWorldModelRef[MAXPLAYERS + 1] = { INVALID_ENT_REFERENCE, ... };
+
 
 int g_iLastOffHandViewmodelRef[MAXPLAYERS + 1] = { INVALID_ENT_REFERENCE, ... };
 
@@ -78,6 +88,9 @@ public void OnEntityCreated(int entity, const char[] className) {
  * Hides our original weapon in local third-person if we have a worldmodel assigned.
  */
 public void TF2_OnConditionAdded(int client, TFCond condition) {
+	if (condition != TFCond_Taunting || !IsValidEntity(g_iLastViewmodelRef[client])) {
+		return;
+	}
 	
 	int weapon = TF2_GetClientActiveWeapon(client);
 	if (IsValidEntity(weapon)) {
@@ -89,18 +102,15 @@ public void TF2_OnConditionAdded(int client, TFCond condition) {
 /**
  * Rehides the original weapon in local first-person if we have a viewmodel assigned.
  */
-public void TF2_OnConditionRemoved(int client, TFCond cond) {
-	if (cond != TFCond_Taunting || !IsValidEntity(g_iLastViewmodelRef[client])) {
+public void TF2_OnConditionRemoved(int client, TFCond condition) {
+	if (condition != TFCond_Taunting || !IsValidEntity(g_iLastViewmodelRef[client])) {
 		return;
 	}
+	
 	int weapon = TF2_GetClientActiveWeapon(client);
 	if (IsValidEntity(weapon)) {
 		SetEntityRenderMode(weapon, RENDER_NORMAL);
 		SetEntProp(weapon, Prop_Send, "m_bBeingRepurposedForTaunt", true);
-	}
-	if (cond == TFCond_Slowed && TF2_GetPlayerClass(client) == TFClass_Sniper
-			&& IsValidEntity(g_iLastViewmodelRef[client])) {
-		UpdateClientWeaponModel(client);
 	}
 }
 
