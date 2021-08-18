@@ -39,7 +39,6 @@
 bool g_bIgnoreWeaponSwitch[MAXPLAYERS + 1];
 
 int g_iLastViewmodelRef[MAXPLAYERS + 1] = { INVALID_ENT_REFERENCE, ... };
-int g_iLastArmModelRef[MAXPLAYERS + 1] = { INVALID_ENT_REFERENCE, ... };
 int g_iLastWorldModelRef[MAXPLAYERS + 1] = { INVALID_ENT_REFERENCE, ... };
 
 int g_iLastOffHandViewmodelRef[MAXPLAYERS + 1] = { INVALID_ENT_REFERENCE, ... };
@@ -76,9 +75,29 @@ public void OnEntityCreated(int entity, const char[] className) {
 }
 
 /**
- * Hotfix to ensure any attached Sniper Rifle is rendered when coming out of being in scope.
+ * Hides our original weapon in local third-person if we have a worldmodel assigned.
+ */
+public void TF2_OnConditionAdded(int client, TFCond condition) {
+	
+	int weapon = TF2_GetClientActiveWeapon(client);
+	if (IsValidEntity(weapon)) {
+		SetEntityRenderMode(weapon, RENDER_TRANSCOLOR);
+		SetEntityRenderColor(weapon, .a = 0);
+	}
+}
+
+/**
+ * Rehides the original weapon in local first-person if we have a viewmodel assigned.
  */
 public void TF2_OnConditionRemoved(int client, TFCond cond) {
+	if (cond != TFCond_Taunting || !IsValidEntity(g_iLastViewmodelRef[client])) {
+		return;
+	}
+	int weapon = TF2_GetClientActiveWeapon(client);
+	if (IsValidEntity(weapon)) {
+		SetEntityRenderMode(weapon, RENDER_NORMAL);
+		SetEntProp(weapon, Prop_Send, "m_bBeingRepurposedForTaunt", true);
+	}
 	if (cond == TFCond_Slowed && TF2_GetPlayerClass(client) == TFClass_Sniper
 			&& IsValidEntity(g_iLastViewmodelRef[client])) {
 		UpdateClientWeaponModel(client);
@@ -116,6 +135,11 @@ void OnInventoryAppliedPre(Event event, const char[] name, bool dontBroadcast) {
 	g_bIgnoreWeaponSwitch[client] = false;
 }
 
+/**
+ * When the player is spawning, the game spends some time checking the player's weapons for
+ * validity.  This fires off a bunch of weapon switch events, so we don't bother checking early
+ * in the function.
+ */
 Action OnPlayerSpawnPre(int client) {
 	g_bIgnoreWeaponSwitch[client] = true;
 	return Plugin_Continue;
@@ -203,50 +227,35 @@ void UpdateClientWeaponModel(int client) {
 		}
 	}
 	
+	// if we didn't touch any viewmodels, there's nothing else we need to do
 	if (bitsActiveModels & (MODEL_VIEW_ACTIVE | MODEL_OFFHAND_ACTIVE) == 0) {
-		// we need to attach arm viewmodels if we render a new weapon viewmodel
-		// or if we have something attached to our offhand
 		return;
 	}
 	
-	char armvmPath[PLATFORM_MAX_PATH];
-	if (GetArmViewModel(client, armvmPath, sizeof(armvmPath))) {
-		// armvmPath might not be precached on the server
-		// mainly an issue with the gunslinger variation of the arm model
-		PrecacheModel(armvmPath);
-		
-		int armvm = TF2_SpawnWearableViewmodel();
-		
-		SetEntityModel(armvm, armvmPath);
-		TF2Util_EquipPlayerWearable(client, armvm);
-		
-		g_iLastArmModelRef[client] = EntIndexToEntRef(armvm);
-		
-		int clientView = GetEntPropEnt(client, Prop_Send, "m_hViewModel");
-		SetEntProp(clientView, Prop_Send, "m_fEffects", EF_NODRAW);
-		
-		bitsActiveModels |= MODEL_ARM_ACTIVE;
-		
-		if (bitsActiveModels & MODEL_VIEW_ACTIVE == 0) {
-			// we didn't create a custom weapon viewmodel, so we need to render the original one
-			// for that weapon
-			int itemdef = GetEntProp(weapon, Prop_Send, "m_iItemDefinitionIndex");
-			
-			if (!TF2Econ_GetItemDefinitionString(itemdef, "model_player", vm, sizeof(vm))) {
-				return;
-			}
-			
-			PrecacheModel(vm);
-			
-			int weaponvm = TF2_SpawnWearableViewmodel();
-			
-			SetEntityModel(weaponvm, vm);
-			TF2Util_EquipPlayerWearable(client, weaponvm);
-			
-			g_iLastViewmodelRef[client] = EntIndexToEntRef(weaponvm);
-			
-			bitsActiveModels |= MODEL_VIEW_ACTIVE;
+	/**
+	 * this prevents the weapon from being drawn in first-person without modifying rendering
+	 * properties that cause lighting quirks (setting VM to nodraw and weapon to transparent)
+	 */
+	SetEntProp(weapon, Prop_Send, "m_bBeingRepurposedForTaunt", true);
+	
+	if (bitsActiveModels & MODEL_VIEW_ACTIVE == 0) {
+		// we're rendering a custom offhand model & we didn't create a custom weapon viewmodel;
+		// we need to render the original one for that weapon
+		int itemdef = GetEntProp(weapon, Prop_Send, "m_iItemDefinitionIndex");
+		if (!TF2Econ_GetItemDefinitionString(itemdef, "model_player", vm, sizeof(vm))) {
+			return;
 		}
+		
+		PrecacheModel(vm);
+		
+		int weaponvm = TF2_SpawnWearableViewmodel();
+		
+		SetEntityModel(weaponvm, vm);
+		TF2Util_EquipPlayerWearable(client, weaponvm);
+		
+		g_iLastViewmodelRef[client] = EntIndexToEntRef(weaponvm);
+		
+		bitsActiveModels |= MODEL_VIEW_ACTIVE;
 	}
 }
 
@@ -319,8 +328,14 @@ bool SetAttachedSapperModel(int sapper, const char[] worldmodel) {
  * Detaches any custom viewmodels on the client and displays the original viewmodel.
  */
 void DetachVMs(int client) {
+	for (int i; i < 7; i++) {
+		int weapon = GetPlayerWeaponSlot(client, i);
+		if (IsValidEntity(weapon)) {
+			SetEntProp(weapon, Prop_Send, "m_bBeingRepurposedForTaunt", false);
+		}
+	}
+	
 	MaybeRemoveWearable(client, g_iLastViewmodelRef[client]);
-	MaybeRemoveWearable(client, g_iLastArmModelRef[client]);
 	
 	if (MaybeRemoveWearable(client, g_iLastWorldModelRef[client])) {
 		int activeWeapon = TF2_GetClientActiveWeapon(client);
@@ -330,42 +345,6 @@ void DetachVMs(int client) {
 	}
 	
 	MaybeRemoveWearable(client, g_iLastOffHandViewmodelRef[client]);
-	
-	int clientView = GetEntPropEnt(client, Prop_Send, "m_hViewModel");
-	if (IsValidEntity(clientView)) {
-		SetEntProp(clientView, Prop_Send, "m_fEffects", 0);
-	}
-}
-
-/**
- * Returns the arm viewmodel appropriate for the given player.
- */
-int GetArmViewModel(int client, char[] buffer, int maxlen) {
-	static char armModels[TFClassType][] = {
-		"",
-		"models/weapons/c_models/c_scout_arms.mdl",
-		"models/weapons/c_models/c_sniper_arms.mdl",
-		"models/weapons/c_models/c_soldier_arms.mdl",
-		"models/weapons/c_models/c_demo_arms.mdl",
-		"models/weapons/c_models/c_medic_arms.mdl",
-		"models/weapons/c_models/c_heavy_arms.mdl",
-		"models/weapons/c_models/c_pyro_arms.mdl",
-		"models/weapons/c_models/c_spy_arms.mdl",
-		"models/weapons/c_models/c_engineer_arms.mdl"
-	};
-	
-	TFClassType playerClass = TF2_GetPlayerClass(client);
-	
-	// special case kludge: use gunslinger vm if gunslinger is active on engineer
-	if (playerClass == TFClass_Engineer) {
-		int meleeWeapon = GetPlayerWeaponSlot(client, TFWeaponSlot_Melee);
-		if (IsValidEntity(meleeWeapon)
-				&& TF2_GetItemDefinitionIndex(meleeWeapon) == TF_ITEM_DEFINDEX_GUNSLINGER) {
-			return strcopy(buffer, maxlen, "models/weapons/c_models/c_engineer_gunslinger.mdl");
-		}
-	}
-	
-	return strcopy(buffer, maxlen, armModels[ view_as<int>(playerClass) ]);
 }
 
 bool MaybeRemoveWearable(int client, int wearable) {
